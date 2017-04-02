@@ -6,7 +6,6 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.BitmapFactory
 import android.os.AsyncTask
 import android.os.Bundle
 import android.support.design.widget.FloatingActionButton
@@ -22,9 +21,6 @@ import android.util.Log
 import android.view.Menu
 import android.view.MenuItem
 import android.widget.ListView
-import com.google.android.gms.common.GoogleApiAvailability
-import com.google.android.gms.common.api.GoogleApiClient
-import com.google.android.gms.drive.*
 import com.google.api.client.extensions.android.http.AndroidHttp
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
 import com.google.api.client.googleapis.extensions.android.gms.auth.UserRecoverableAuthIOException
@@ -33,84 +29,72 @@ import java.io.ByteArrayOutputStream
 import java.net.SocketTimeoutException
 import java.util.*
 import kotlin.collections.ArrayList
-import kotlin.reflect.KClass
 
 /**
  * 最初の画面処理を担当するクラス
  * @author yuu
  * @since 2017/03/30
  *
- * @property client グーグルドライブ使用のためのAPIクライアント
- * @property syncRoot グーグルドライブのフォルダ同期のルート
+ * @property credential Google APIs Client Library for Javaを利用するための認証情報
+ * @property service Google APIs Client Library for Javaの利用元
+ *
+ * @property remainTask 全処理終了後に処理を行うためのタスクのカウンタ
+ *
+ * @property syncRoot グーグルドライブのフォルダ同期のルート。ただし、クエリの都合上、IDは正しいが、タイトルなどは正しくない。
+ * @property nowRoots 現在参照中のフォルダルートの連なり
+ *
  */
 class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelectedListener {
-    private val RESOLVE_CONNECTION_REQUEST_CODE = 1
-    private val OPEN_FILE_ACTIVITY_CODE = 2
     private val REQUEST_ACCOUNT = 3
     private val MY_PERMISSIONS_REQUEST_READ_CONTACTS = 4
     private val REQUEST_AUTHORIZATION = 5
 
     companion object {
-        var client : GoogleApiClient? = null
         var credential : GoogleAccountCredential? = null
         var service : com.google.api.services.drive.Drive? = null
     }
 
     private val remainTask = ArrayList<Boolean>()
-    private var syncRoot : ListItem? = null
-    private var nowRoot : ListItem? = null
-    private var adapter : ImageArrayAdapter? = null
 
-    private var userName : String? = null
+    private var dataID : String? = null
+    private var syncRoot : ListItem? = null
+    private var nowRoots = ArrayList<ListItem>()
+
+    private var adapter : ImageArrayAdapter? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        //初期情報取得
-        val pref = getPreferences(Context.MODE_PRIVATE)
-        userName = pref.getString("userName", null)
+        // 初期情報取得
+        val userName = getPreferences(Context.MODE_PRIVATE).getString("userName", null)
 
-        //クライアント作成
+        // 認証
         checkPermission()
+        // 保存されたユーザー名があるならば設定
         if(userName != null) {
             credential = GoogleAccountCredential.usingOAuth2(this, Arrays.asList("https://www.googleapis.com/auth/drive"))
             credential?.selectedAccountName = userName
             service = com.google.api.services.drive.Drive.Builder(AndroidHttp.newCompatibleTransport(), GsonFactory(), credential).build()
         }
-        Log.d("REQUEST", "ACCOUNT NAME ${credential?.selectedAccountName}")
+        // ユーザー名が保存されていないか、適切でない場合は取得
         if(credential?.selectedAccountName == null) {
             credential = GoogleAccountCredential.usingOAuth2(this, Arrays.asList("https://www.googleapis.com/auth/drive"))
             startActivityForResult(credential?.newChooseAccountIntent(), REQUEST_ACCOUNT)
         }
 
-        //クライアント作成
-        client = GoogleApiClient.Builder(this).addApi(Drive.API).addScope(Drive.SCOPE_FILE)
-                .addConnectionCallbacks(object : GoogleApiClient.ConnectionCallbacks {
-                    override fun onConnected(p0: Bundle?) {
-                    }
-                    override fun onConnectionSuspended(p0: Int) {
-                    }
-                }).addOnConnectionFailedListener {
-                    if(it.hasResolution())
-                        it.startResolutionForResult(this, RESOLVE_CONNECTION_REQUEST_CODE)
-                    else
-                        GoogleApiAvailability.getInstance().getErrorDialog(this, it.errorCode, 0).show()
-                }.build()
-
-        //画面構成をセット
+        // 画面構成をセット
         setContentView(R.layout.activity_main)
 
-        //ツールバーを設定
+        // ツールバーを設定
         val toolbar = findViewById(R.id.toolbar) as Toolbar
         setSupportActionBar(toolbar)
 
-        //ボタンを設定
-        val fab = findViewById(R.id.fab) as FloatingActionButton
-        fab.setOnClickListener {
-            Log.d("BUTTON", "${nowRoot?.title} -> ${nowRoot?.parent?.title}")
-            if(nowRoot?.parent != null) {
-                addElements(nowRoot?.parent!!)
-            }
+        // 戻るボタンを設定
+        val back = findViewById(R.id.pre_back) as FloatingActionButton
+        back.setOnClickListener {
+            // 現在のルートに親があるならば、そこに戻る
+            if(nowRoots.size > 1)
+                addElements(nowRoots[nowRoots.lastIndex])
         }
 
         //ツールバーのトグルを設定
@@ -127,56 +111,32 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
         val list = findViewById(R.id.list) as ListView
         adapter = ImageArrayAdapter(this, R.layout.list_view_image_item, ArrayList())
         list.adapter = adapter
-        list.setOnItemClickListener { adapterView, view, i, l ->
+        list.setOnItemClickListener { adapterView, _, i, _ ->
             val item = (adapterView as ListView).getItemAtPosition(i) as ListItem
+            // フォルダなら展開、ファイルならイメージビューアへ遷移
             if(item.isFolder)
                 addElements(item)
             else
-                showImage(item.id)
+                showImage(item)
         }
-        unparseListItem()
-    }
 
-    override fun onStart() {
-        super.onStart()
-        client?.connect()
+        // 保存されたリストがあるならば、再現する
+        unparseListItem()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         when(requestCode) {
-            RESOLVE_CONNECTION_REQUEST_CODE -> {
-                if(resultCode == Activity.RESULT_OK)
-                    client?.connect()
-            }
-            OPEN_FILE_ACTIVITY_CODE -> Log.d("test", "$requestCode")
+            // ユーザー設定後に遷移
             REQUEST_ACCOUNT -> {
                 if(resultCode == Activity.RESULT_OK && data != null && data.extras != null) {
                     val name = data.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
                     if(name != null) {
                         credential?.selectedAccountName = name
                         service = com.google.api.services.drive.Drive.Builder(AndroidHttp.newCompatibleTransport(), GsonFactory(), credential).build()
-                        Log.d("REQUEST", "ACCOUNT NAME ${credential?.selectedAccountName}")
-                        val pref = getPreferences(Context.MODE_PRIVATE)
-                        val e = pref.edit()
-                        e.putString("userName", credential?.selectedAccountName)
-                        e.commit()
+                        // ユーザー名を保存
+                        getPreferences(Context.MODE_PRIVATE).edit().putString("userName", credential?.selectedAccountName).apply()
                     }
                 }
-            }
-        }
-    }
-
-    fun checkPermission() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.GET_ACCOUNTS) != PackageManager.PERMISSION_GRANTED) {
-            if (ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.GET_ACCOUNTS)) {
-            } else {
-                ActivityCompat.requestPermissions(this, Array(1, {Manifest.permission.GET_ACCOUNTS}), MY_PERMISSIONS_REQUEST_READ_CONTACTS);
-            }
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.INTERNET) != PackageManager.PERMISSION_GRANTED) {
-            if (ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.INTERNET)) {
-            } else {
-                ActivityCompat.requestPermissions(this, Array(1, {Manifest.permission.INTERNET}), MY_PERMISSIONS_REQUEST_READ_CONTACTS);
             }
         }
     }
@@ -191,21 +151,21 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        // Inflate the menu; this adds items to the action bar if it is present.
         menuInflater.inflate(R.menu.main, menu)
         return true
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        // Handle action bar item clicks here. The action bar will
-        // automatically handle clicks on the Home/Up button, so long
-        // as you specify a parent activity in AndroidManifest.xml.
         when(item.itemId) {
             R.id.action_settings -> return true
-            R.id.action_sync -> { syncDrive(true); return true }
+            R.id.action_sync -> { syncDrive(); return true }
             R.id.action_user -> {
-                credential = GoogleAccountCredential.usingOAuth2(this, Arrays.asList("https://www.googleapis.com/auth/drive"))
                 startActivityForResult(credential?.newChooseAccountIntent(), REQUEST_ACCOUNT)
+                return true
+            }
+            R.id.action_sync_file-> {
+                syncData()
+                return true
             }
         }
 
@@ -235,27 +195,84 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
         return true
     }
 
-    fun syncDrive(enbale : Boolean) {
+    /**
+     * 認証状態を調べ、認証されていなければ、認証のダイアログを出す
+     */
+    fun checkPermission() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.GET_ACCOUNTS) != PackageManager.PERMISSION_GRANTED) {
+            if (!ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.GET_ACCOUNTS))
+                ActivityCompat.requestPermissions(this, Array(1, {Manifest.permission.GET_ACCOUNTS}), MY_PERMISSIONS_REQUEST_READ_CONTACTS)
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.INTERNET) != PackageManager.PERMISSION_GRANTED) {
+            if (!ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.INTERNET))
+                ActivityCompat.requestPermissions(this, Array(1, {Manifest.permission.INTERNET}), MY_PERMISSIONS_REQUEST_READ_CONTACTS)
+        }
+    }
+
+    /**
+     * Google Driveとのファイル同期を行う
+     */
+    fun syncDrive() {
         searchDrawingSupporter()
     }
 
+    fun syncData() {
+        (object : AsyncTask<Void, Void, Unit>() {
+            override fun doInBackground(vararg params: Void?){
+                var token : String? = null
+                try {
+                    // テキストデータのIDを取得する
+                    do {
+                        val result = service?.files()?.list()
+                                ?.setQ("title = 'text.db'")
+                                ?.setPageToken(token)
+                                ?.execute()
+                        Log.d("RESULT", "$result")
+                        result?.items?.forEach {
+                            dataID = it.id
+                            getPreferences(Context.MODE_PRIVATE).edit().putString("data", dataID).apply()
+                        }
+                        Log.d("RESULT", "$dataID, Ended")
+                        token = result?.nextPageToken
+                    } while(token != null)
+                    if(dataID != null) {
+                        (object :AsyncTask<Unit, Unit, Unit>(){
+                            val out = ByteArrayOutputStream()
+                            override fun doInBackground(vararg params: Unit?) {
+                                MainActivity.service?.files()?.get(dataID)?.setAlt("media")?.executeAndDownloadTo(out)
+                            }
+
+                            override fun onPostExecute(param: Unit?) {
+                                openFileOutput("text.db", Context.MODE_PRIVATE).write(out.toByteArray())
+                            }
+                        }).execute()
+                    }
+                } catch (e: UserRecoverableAuthIOException) {
+                    startActivityForResult(e.intent, REQUEST_AUTHORIZATION)
+                }
+            }
+        }).execute()
+    }
+
+    /**
+     * DrawingSupporter.jarを検索し、そこを基点に再帰検索を繰り返す
+     */
     fun searchDrawingSupporter() {
         (object : AsyncTask<Void, Void, Unit>() {
             override fun doInBackground(vararg params: Void?){
                 var token : String? = null
                 try {
                     do {
+                        // TitleがDrawing Supporter.jarであるファイルを検索する
                         val result = service?.files()?.list()
                                 ?.setQ("title = 'DrawingSupporter.jar'")
                                 ?.setPageToken(token)
                                 ?.execute()
-                        Log.d("RESULT", "$result")
-                        result?.items?.filterNot { it.title.startsWith('.') }?.forEach {
-                            Log.d("RESULT", it.title)
-                            syncRoot = ListItem(it.id, it.mimeType == "application/vnd.google-apps.folder", it.title, null, ArrayList())
+                        // そのファイルの親からフォルダを開いていく
+                        result?.items?.forEach {
+                            syncRoot = ListItem(it.parents.first().id, true, ".", null, ArrayList())
                             expandFolder(it.parents.first().id, syncRoot!!)
                         }
-                        Log.d("RESULT", "Ended")
                         token = result?.nextPageToken
                     } while(token != null)
                 } catch (e: UserRecoverableAuthIOException) {
@@ -312,7 +329,10 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
             adapter?.add(it)
         }
         adapter?.notifyDataSetChanged()
-        nowRoot = root
+        while(nowRoots.contains(root)) {
+            nowRoots.removeAt(nowRoots.lastIndex)
+        }
+        nowRoots.add(root)
     }
 
     fun parseListItem(){
@@ -363,10 +383,11 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
         }
     }
 
-    fun showImage(id : String) {
+    fun showImage(item : ListItem) {
         val intent = Intent(application, ImageActivity::class.java)
-        intent.putExtra("Image", id)
+                .putExtra("Image", item.id)
+                .putExtra("Title", item.title)
+                .putExtra("Path", nowRoots.map { it.title }.reduceRight { s, acc -> s + "/" + acc })
         startActivity(intent)
     }
-
 }

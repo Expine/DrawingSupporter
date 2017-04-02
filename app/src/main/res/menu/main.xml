@@ -14,4 +14,8 @@
         android:id="@+id/action_sync"
         android:orderInCategory="100"
         android:title="@string/action_sync" />
+    <item
+        android:id="@+id/action_sync_file"
+        android:orderInCategory="100"
+        android:title="@string/action_sync_file" />
 </menu>
