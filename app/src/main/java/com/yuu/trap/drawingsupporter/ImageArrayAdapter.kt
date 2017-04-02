@@ -2,7 +2,6 @@ package com.yuu.trap.drawingsupporter
 
 import android.content.Context
 import android.widget.ArrayAdapter
-import com.google.android.gms.drive.DriveId
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -10,7 +9,7 @@ import android.widget.ImageView
 import android.widget.TextView
 
 
-data class ListItem(val imageId : Int, val text : String, val isFile : Boolean, val id : DriveId)
+data class ListItem(var id : String, var isFolder : Boolean, var title : String, var parent : ListItem?, val children : ArrayList<ListItem>)
 
 class ImageArrayAdapter(context : Context, private val resource : Int, private val objects : ArrayList<ListItem>) : ArrayAdapter<ListItem>(context, resource, objects){
     private val inflater = context.getSystemService(Context.LAYOUT_INFLATER_SERVICE) as LayoutInflater
@@ -18,9 +17,9 @@ class ImageArrayAdapter(context : Context, private val resource : Int, private v
     override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
         val view = convertView ?: inflater.inflate(resource, null)
 
-        val item = objects.get(position)
-        (view.findViewById(R.id.item_text) as TextView).text = item.text
-        (view.findViewById(R.id.item_image) as ImageView).setImageResource(item.imageId)
+        val item = objects[position]
+        (view.findViewById(R.id.item_text) as TextView).text = item.title
+        (view.findViewById(R.id.item_image) as ImageView).setImageResource(if(item.isFolder) R.mipmap.ic_folder else R.mipmap.ic_image)
 
         return view
     }

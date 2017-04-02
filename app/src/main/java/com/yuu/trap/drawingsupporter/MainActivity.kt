@@ -3,12 +3,13 @@ package com.yuu.trap.drawingsupporter
 import android.Manifest
 import android.accounts.AccountManager
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.os.AsyncTask
 import android.os.Bundle
 import android.support.design.widget.FloatingActionButton
-import android.support.design.widget.Snackbar
 import android.support.design.widget.NavigationView
 import android.support.v4.app.ActivityCompat
 import android.support.v4.content.ContextCompat
@@ -21,19 +22,18 @@ import android.util.Log
 import android.view.Menu
 import android.view.MenuItem
 import android.widget.ListView
-import com.google.android.gms.auth.GoogleAuthUtil
 import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.common.api.GoogleApiClient
 import com.google.android.gms.drive.*
-import com.google.android.gms.drive.query.Filters
-import com.google.android.gms.drive.query.Query
-import com.google.android.gms.drive.query.SearchableField
 import com.google.api.client.extensions.android.http.AndroidHttp
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
 import com.google.api.client.googleapis.extensions.android.gms.auth.UserRecoverableAuthIOException
 import com.google.api.client.json.gson.GsonFactory
+import java.io.ByteArrayOutputStream
+import java.net.SocketTimeoutException
 import java.util.*
 import kotlin.collections.ArrayList
+import kotlin.reflect.KClass
 
 /**
  * 最初の画面処理を担当するクラス
@@ -50,19 +50,38 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
     private val MY_PERMISSIONS_REQUEST_READ_CONTACTS = 4
     private val REQUEST_AUTHORIZATION = 5
 
-    private var client : GoogleApiClient? = null
-    private var credential : GoogleAccountCredential? = null
-        private var service : com.google.api.services.drive.Drive? = null
-    private var syncRoot : DriveFolder? = null
+    companion object {
+        var client : GoogleApiClient? = null
+        var credential : GoogleAccountCredential? = null
+        var service : com.google.api.services.drive.Drive? = null
+    }
+
+    private val remainTask = ArrayList<Boolean>()
+    private var syncRoot : ListItem? = null
+    private var nowRoot : ListItem? = null
     private var adapter : ImageArrayAdapter? = null
+
+    private var userName : String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        //初期情報取得
+        val pref = getPreferences(Context.MODE_PRIVATE)
+        userName = pref.getString("userName", null)
+
         //クライアント作成
         checkPermission()
-        credential = GoogleAccountCredential.usingOAuth2(this, Arrays.asList("https://www.googleapis.com/auth/drive"))
-        startActivityForResult(credential?.newChooseAccountIntent(), REQUEST_ACCOUNT)
+        if(userName != null) {
+            credential = GoogleAccountCredential.usingOAuth2(this, Arrays.asList("https://www.googleapis.com/auth/drive"))
+            credential?.selectedAccountName = userName
+            service = com.google.api.services.drive.Drive.Builder(AndroidHttp.newCompatibleTransport(), GsonFactory(), credential).build()
+        }
+        Log.d("REQUEST", "ACCOUNT NAME ${credential?.selectedAccountName}")
+        if(credential?.selectedAccountName == null) {
+            credential = GoogleAccountCredential.usingOAuth2(this, Arrays.asList("https://www.googleapis.com/auth/drive"))
+            startActivityForResult(credential?.newChooseAccountIntent(), REQUEST_ACCOUNT)
+        }
 
         //クライアント作成
         client = GoogleApiClient.Builder(this).addApi(Drive.API).addScope(Drive.SCOPE_FILE)
@@ -87,7 +106,12 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
 
         //ボタンを設定
         val fab = findViewById(R.id.fab) as FloatingActionButton
-        fab.setOnClickListener { view -> Snackbar.make(view, "Replace with your own action", Snackbar.LENGTH_LONG).setAction("Action", null).show() }
+        fab.setOnClickListener {
+            Log.d("BUTTON", "${nowRoot?.title} -> ${nowRoot?.parent?.title}")
+            if(nowRoot?.parent != null) {
+                addElements(nowRoot?.parent!!)
+            }
+        }
 
         //ツールバーのトグルを設定
         val drawer = findViewById(R.id.drawer_layout) as DrawerLayout
@@ -104,10 +128,13 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
         adapter = ImageArrayAdapter(this, R.layout.list_view_image_item, ArrayList())
         list.adapter = adapter
         list.setOnItemClickListener { adapterView, view, i, l ->
-            val item = (adapterView as ListView).selectedItem as ListItem
-            if(!item.isFile)
-                addElements(item.id.asDriveFolder())
+            val item = (adapterView as ListView).getItemAtPosition(i) as ListItem
+            if(item.isFolder)
+                addElements(item)
+            else
+                showImage(item.id)
         }
+        unparseListItem()
     }
 
     override fun onStart() {
@@ -129,6 +156,10 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                         credential?.selectedAccountName = name
                         service = com.google.api.services.drive.Drive.Builder(AndroidHttp.newCompatibleTransport(), GsonFactory(), credential).build()
                         Log.d("REQUEST", "ACCOUNT NAME ${credential?.selectedAccountName}")
+                        val pref = getPreferences(Context.MODE_PRIVATE)
+                        val e = pref.edit()
+                        e.putString("userName", credential?.selectedAccountName)
+                        e.commit()
                     }
                 }
             }
@@ -172,6 +203,10 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
         when(item.itemId) {
             R.id.action_settings -> return true
             R.id.action_sync -> { syncDrive(true); return true }
+            R.id.action_user -> {
+                credential = GoogleAccountCredential.usingOAuth2(this, Arrays.asList("https://www.googleapis.com/auth/drive"))
+                startActivityForResult(credential?.newChooseAccountIntent(), REQUEST_ACCOUNT)
+            }
         }
 
         return super.onOptionsItemSelected(item)
@@ -201,6 +236,10 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
     }
 
     fun syncDrive(enbale : Boolean) {
+        searchDrawingSupporter()
+    }
+
+    fun searchDrawingSupporter() {
         (object : AsyncTask<Void, Void, Unit>() {
             override fun doInBackground(vararg params: Void?){
                 var token : String? = null
@@ -211,62 +250,123 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                                 ?.setPageToken(token)
                                 ?.execute()
                         Log.d("RESULT", "$result")
-                        result?.items?.forEach {
-
+                        result?.items?.filterNot { it.title.startsWith('.') }?.forEach {
                             Log.d("RESULT", it.title)
+                            syncRoot = ListItem(it.id, it.mimeType == "application/vnd.google-apps.folder", it.title, null, ArrayList())
+                            expandFolder(it.parents.first().id, syncRoot!!)
+                        }
+                        Log.d("RESULT", "Ended")
+                        token = result?.nextPageToken
+                    } while(token != null)
+                } catch (e: UserRecoverableAuthIOException) {
+                    startActivityForResult(e.intent, REQUEST_AUTHORIZATION)
+                }
+            }
+        }).execute()
+    }
+
+    fun expandFolder(id : String, root : ListItem) {
+        Log.d("RESULT", "ID is $id")
+        remainTask.add(true)
+        (object : AsyncTask<Void, Void, Unit>() {
+            override fun doInBackground(vararg params: Void?){
+                var token : String? = null
+                try {
+                    do {
+                        val result = service?.files()?.list()
+                                ?.setQ("'$id' in parents and (mimeType contains 'image/' or mimeType = 'application/vnd.google-apps.folder')")
+                                ?.setPageToken(token)
+                                ?.execute()
+                        Log.d("RESULT", "$result")
+                        result?.items?.filterNot { it.title.startsWith('.')}?.forEach {
+                            Log.d("RESULT", it.title)
+                            val isFolder = it.mimeType == "application/vnd.google-apps.folder"
+                            val item = ListItem(it.id, isFolder, it.title, root, ArrayList())
+                            root.children.add(item)
+                            if(isFolder)
+                                expandFolder(it.id, item)
                         }
                         token = result?.nextPageToken
                     } while(token != null)
+                    remainTask.removeAt(remainTask.size - 1)
+                } catch (e: SocketTimeoutException) {
+                    Log.d("RESULT", "RETRY")
+                    doInBackground()
                 } catch (e: UserRecoverableAuthIOException) {
                     startActivityForResult(e.intent, REQUEST_AUTHORIZATION);
                 }
             }
-        }).execute()
-        if(client?.isConnected ?: false) {
-            /*
-            val query = Query.Builder().addFilter(Filters.contains(SearchableField.TITLE, "00-p-start.JPG")).build()
-            Log.d("Root", "$query")
-            Drive.DriveApi.query(client, query).setResultCallback {
-                it.metadataBuffer.forEach {
-                    Log.d("Root", "${it.title}")
-                }
-                if(it.metadataBuffer.firstOrNull()?.isFolder ?: false)
-                    syncRoot = it.metadataBuffer.firstOrNull()?.driveId?.asDriveFolder()
-                if(syncRoot != null)
-                    addElements(syncRoot!!)
-                Log.d("Root", "$syncRoot")
-                /*
-                val file = it.metadataBuffer.filterNot { it.isFolder }.first()
-                Log.d("Root", "$file -> ${file.title} -> ${file.driveId}")
-                adapter?.add(ListItem(R.mipmap.ic_image, file.title, true, file.driveId))
-                file.driveId.asDriveResource().listParents(client).setResultCallback {
-                    it.metadataBuffer.forEach { Log.d("Root", "List1 $it") }
-                }
-                it.metadataBuffer.filterNot { it.isFolder }.first().driveId.asDriveFile().listParents(client).setResultCallback {
-                    it.metadataBuffer.forEach { Log.d("Root", "List2 $it") }
-                    Log.d("Root", "${it.metadataBuffer}")
-                    syncRoot = it.metadataBuffer.firstOrNull()?.driveId?.asDriveFolder()
-                    if(syncRoot != null)
+            override fun onPostExecute(result: Unit?) {
+                if(remainTask.isEmpty())
+                    if(syncRoot != null) {
                         addElements(syncRoot!!)
-                    Log.d("Root", "$syncRoot")
-                    it.release()
-                }
-                */
-                it.release()
+                        parseListItem()
+                    }
             }
-            */
+        }).execute()
+    }
+
+    fun addElements(root : ListItem) {
+        adapter?.clear()
+        root.children.forEach {
+            adapter?.add(it)
+        }
+        adapter?.notifyDataSetChanged()
+        nowRoot = root
+    }
+
+    fun parseListItem(){
+        Log.d("PARSE", "PARSE START")
+        var result = ""
+        if(syncRoot != null)
+           result = parseListItem(syncRoot!!, 0)
+        val pref = getPreferences(Context.MODE_PRIVATE)
+        val e = pref.edit()
+        e.putString("listData", result)
+        e.commit()
+        Log.d("SAVE", "Written")
+    }
+    fun parseListItem(root : ListItem, depth : Int) : String{
+        var result = "{\nid:${root.id}\nis:${root.isFolder}\ntitle:${root.title}\n"
+        root.children.forEach {
+            result += parseListItem(it, depth + 1)
+        }
+        result += "}\n"
+        return result
+    }
+
+    fun unparseListItem() {
+        var processingItem : ListItem? = null
+        val parents = ArrayList<ListItem>()
+        val listData = getPreferences(Context.MODE_PRIVATE).getString("listData", null)
+        Log.d("UNPARSE", "UnparseStart")
+        if(listData != null) {
+            listData.lines().forEach {
+                when {
+                    it == "{" -> {
+                        processingItem = ListItem("", true, "", if(parents.isEmpty()) null else parents[parents.lastIndex], ArrayList())
+                        if(parents.isNotEmpty())
+                            parents[parents.lastIndex].children.add(processingItem!!)
+                        parents.add(processingItem!!)
+                    }
+                    it.startsWith("id:") -> { processingItem?.id = it.substring(3) }
+                    it.startsWith("is:") -> { processingItem?.isFolder = it.substring(3) == "true" }
+                    it.startsWith("title:") -> { processingItem?.title = it.substring(6) }
+                    it == "}" -> { if(parents.size > 1) parents.removeAt(parents.lastIndex) }
+                }
+            }
+        }
+        Log.d("UNPARSE", "${parents[0].title} -> ${parents[0].children[0].title}}")
+        if(parents.isNotEmpty()) {
+            syncRoot = parents[0]
+            addElements(syncRoot!!)
         }
     }
 
-    fun addElements(root : DriveFolder) {
-        adapter?.clear()
-        if(client?.isConnected ?: false) {
-            root.listChildren(client).setResultCallback {
-                it.metadataBuffer.forEach {
-                    adapter?.add(ListItem(if(it.isFolder) R.mipmap.ic_folder else R.mipmap.ic_image, it.title, !it.isFolder, it.driveId))
-                }
-                adapter?.notifyDataSetChanged()
-            }
-        }
+    fun showImage(id : String) {
+        val intent = Intent(application, ImageActivity::class.java)
+        intent.putExtra("Image", id)
+        startActivity(intent)
     }
+
 }
