@@ -19,11 +19,11 @@ import android.support.v7.app.ActionBarDrawerToggle
 import android.support.v7.app.AppCompatActivity
 import android.support.v7.widget.Toolbar
 import android.util.Log
+import android.view.KeyEvent
 import android.view.Menu
 import android.view.MenuItem
 import android.widget.ListView
 import com.google.api.client.extensions.android.http.AndroidHttp
-import com.google.api.client.googleapis.GoogleUtils
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
 import com.google.api.client.googleapis.extensions.android.gms.auth.UserRecoverableAuthIOException
 import com.google.api.client.http.FileContent
@@ -57,12 +57,13 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
     companion object {
         var credential : GoogleAccountCredential? = null
         var service : com.google.api.services.drive.Drive? = null
+
+        var syncRoot : ListItem? = null
     }
 
     private val remainTask = ArrayList<Boolean>()
 
     private var dataID : String? = null
-    private var syncRoot : ListItem? = null
     private var nowRoots = ArrayList<ListItem>()
 
     private var adapter : ImageArrayAdapter? = null
@@ -98,12 +99,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
         // 戻るボタンを設定
         val back = findViewById(R.id.pre_back) as FloatingActionButton
         back.setOnClickListener {
-            // 現在のルートに親があるならば、そこに戻る
-            Log.d("ROOT", "${nowRoots.size}")
-            if(nowRoots.size > 1)
-                addElements(nowRoots[nowRoots.lastIndex - 1])
-            val content = File("$filesDir/text.db")
-            content.forEachLine { Log.d("DOWNLOADS", it) }
+            back()
         }
 
         //ツールバーのトグルを設定
@@ -206,6 +202,21 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
         val drawer = findViewById(R.id.drawer_layout) as DrawerLayout
         drawer.closeDrawer(GravityCompat.START)
         return true
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        when(keyCode) {
+            KeyEvent.KEYCODE_BACK -> {
+                if(nowRoots.size == 1)
+                    return super.onKeyDown(keyCode, event)
+                else {
+                    back()
+                    return true
+                }
+
+            }
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     /**
@@ -331,6 +342,13 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
         }).execute()
     }
 
+    fun back() {
+        // 現在のルートに親があるならば、そこに戻る
+        Log.d("ROOT", "${nowRoots.size}")
+        if(nowRoots.size > 1)
+            addElements(nowRoots[nowRoots.lastIndex - 1])
+    }
+
     fun expandFolder(id : String, root : ListItem) {
         Log.d("RESULT", "ID is $id")
         remainTask.add(true)
@@ -374,7 +392,8 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
 
     fun addElements(root : ListItem) {
         adapter?.clear()
-        root.children.forEach {
+
+        root.children.sortedBy { it.title }.forEach {
             adapter?.add(it)
         }
         adapter?.notifyDataSetChanged()
