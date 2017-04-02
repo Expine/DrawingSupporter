@@ -3,6 +3,7 @@ package com.yuu.trap.drawingsupporter
 import android.Manifest
 import android.accounts.AccountManager
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -22,10 +23,14 @@ import android.view.Menu
 import android.view.MenuItem
 import android.widget.ListView
 import com.google.api.client.extensions.android.http.AndroidHttp
+import com.google.api.client.googleapis.GoogleUtils
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
 import com.google.api.client.googleapis.extensions.android.gms.auth.UserRecoverableAuthIOException
+import com.google.api.client.http.FileContent
 import com.google.api.client.json.gson.GsonFactory
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.IOException
 import java.net.SocketTimeoutException
 import java.util.*
 import kotlin.collections.ArrayList
@@ -67,6 +72,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
 
         // 初期情報取得
         val userName = getPreferences(Context.MODE_PRIVATE).getString("userName", null)
+        dataID = getPreferences(Context.MODE_PRIVATE).getString("data", null)
 
         // 認証
         checkPermission()
@@ -93,8 +99,11 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
         val back = findViewById(R.id.pre_back) as FloatingActionButton
         back.setOnClickListener {
             // 現在のルートに親があるならば、そこに戻る
+            Log.d("ROOT", "${nowRoots.size}")
             if(nowRoots.size > 1)
-                addElements(nowRoots[nowRoots.lastIndex])
+                addElements(nowRoots[nowRoots.lastIndex - 1])
+            val content = File("$filesDir/text.db")
+            content.forEachLine { Log.d("DOWNLOADS", it) }
         }
 
         //ツールバーのトグルを設定
@@ -163,8 +172,12 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                 startActivityForResult(credential?.newChooseAccountIntent(), REQUEST_ACCOUNT)
                 return true
             }
-            R.id.action_sync_file-> {
+            R.id.action_sync_file -> {
                 syncData()
+                return true
+            }
+            R.id.action_upload_file -> {
+                uploadData()
                 return true
             }
         }
@@ -228,7 +241,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                                 ?.setPageToken(token)
                                 ?.execute()
                         Log.d("RESULT", "$result")
-                        result?.items?.forEach {
+                        result?.items?.filterNot { it.labels.trashed }?.forEach {
                             dataID = it.id
                             getPreferences(Context.MODE_PRIVATE).edit().putString("data", dataID).apply()
                         }
@@ -244,6 +257,38 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
 
                             override fun onPostExecute(param: Unit?) {
                                 openFileOutput("text.db", Context.MODE_PRIVATE).write(out.toByteArray())
+                                val acontent = File("$filesDir/text.db")
+                                acontent.forEachLine { Log.d("DOWNLOADS", it) }
+                            }
+                        }).execute()
+                    }
+                } catch (e: UserRecoverableAuthIOException) {
+                    startActivityForResult(e.intent, REQUEST_AUTHORIZATION)
+                } catch (e: IOException) {
+                    AlertDialog.Builder(applicationContext).setTitle("Sync Error").setMessage(e.message).create().show()
+                } catch (e: SocketTimeoutException) {
+                    AlertDialog.Builder(applicationContext).setTitle("Time out").setMessage(e.message).create().show()
+                }
+            }
+        }).execute()
+    }
+
+    fun uploadData() {
+        (object : AsyncTask<Void, Void, Unit>() {
+            override fun doInBackground(vararg params: Void?){
+                var token : String? = null
+                try {
+                    if(dataID != null) {
+                        (object :AsyncTask<Unit, Unit, Unit>(){
+                            override fun doInBackground(vararg params: Unit?) {
+                                val file = MainActivity.service?.files()?.get(dataID)?.execute()
+                                val content = File("$filesDir/text.db")
+                                val media = FileContent(file?.mimeType, content)
+                                MainActivity.service?.files()?.update(dataID, file, media)?.execute()
+                                Log.d("UPLOAD", "UPLOADED")
+                            }
+
+                            override fun onPostExecute(param: Unit?) {
                             }
                         }).execute()
                     }
@@ -252,6 +297,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                 }
             }
         }).execute()
+
     }
 
     /**
@@ -275,6 +321,9 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                         }
                         token = result?.nextPageToken
                     } while(token != null)
+                } catch (e: SocketTimeoutException) {
+                    Log.d("RESULT", "RETRY")
+                    doInBackground()
                 } catch (e: UserRecoverableAuthIOException) {
                     startActivityForResult(e.intent, REQUEST_AUTHORIZATION)
                 }

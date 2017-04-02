@@ -1,5 +1,6 @@
 package com.yuu.trap.drawingsupporter.text
 
+import android.util.Log
 import java.io.*
 import java.security.MessageDigest
 
@@ -106,9 +107,7 @@ object TextData {
      * @param file 更新するファイル
      * @param update 更新するデータ
      */
-    fun unparseFile(br : BufferedReader, out : FileOutputStream, path : String, bytes : ByteArray, update : Map<String, String>) {
-        //識別するためのSHA1値
-        val sha = sha256(bytes)
+    fun unparseFile(br : BufferedReader, outFilePath : String, path : String, sha : String, update : Map<String, String>) {
         //書き込む領域内であることを判定する
         var isWritable = false
         //すでに書き込んだかどうかを判定する
@@ -144,7 +143,7 @@ object TextData {
         }
 
         //更新されたテキストをデータファイルに書き込む
-        out.write(text.toByteArray())
+        File(outFilePath).writeText(text)
     }
 
     /**

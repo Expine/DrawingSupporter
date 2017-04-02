@@ -8,5 +8,6 @@
     <string name="action_sync">Sync Google Drive</string>
     <string name="action_user">Select Google User</string>
     <string name="action_sync_file">Sync Data</string>
+    <string name="action_upload_file">Upload Data</string>
     <string name="button_back">Back</string>
 </resources>
