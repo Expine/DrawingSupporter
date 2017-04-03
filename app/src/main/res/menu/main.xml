@@ -6,11 +6,6 @@
         android:orderInCategory="100"
         android:title="@string/action_user" />
     <item
-        android:id="@+id/action_settings"
-        android:orderInCategory="100"
-        android:title="@string/action_settings"
-        app:showAsAction="never" />
-    <item
         android:id="@+id/action_sync"
         android:orderInCategory="100"
         android:title="@string/action_sync" />
@@ -19,7 +14,11 @@
         android:orderInCategory="100"
         android:title="@string/action_sync_file" />
     <item
-        android:id="@+id/action_upload_file"
+        android:id="@+id/action_upload_camera"
         android:orderInCategory="100"
-        android:title="@string/action_upload_file" />
+        android:title="@string/action_upload_camera" />
+    <item
+        android:id="@+id/action_upload_gallery"
+        android:orderInCategory="100"
+        android:title="@string/action_upload_gallery" />
 </menu>

@@ -20,6 +20,16 @@ import kotlin.collections.HashMap
  * 画像を表示するActivity
  * @author yuu
  * @since 2017/04/02
+ *
+ * @property created 画像やテキストの表示が終了したかどうかを判定する
+ *
+ * @property editTexts 編集テキストエリアのHashMap。リージョン名をキーとする
+ *
+ * @property title 表示する画像のタイトル
+ * @property path 表示する画像のパス
+ * @property sha1 表示する画像のSHA1値
+ *
+ * @property transitions ハイパーリンクで移動した際の、元のタイトル、パス、画像のバイト配列を保存する。
  */
 class ImageActivity : AppCompatActivity(){
     private var created = false
@@ -38,7 +48,7 @@ class ImageActivity : AppCompatActivity(){
         // パス情報を取得
         title = intent.getStringExtra("Title")
         path = intent.getStringExtra("Path") + "/$title"
-        Log.d("PATH", "Path is $path Title is $title")
+        Log.d("IMAGE", "Path is $path Title is $title")
 
         //画面構成をセット
         setContentView(R.layout.activity_image)
@@ -60,11 +70,10 @@ class ImageActivity : AppCompatActivity(){
                 if(transitions.isEmpty())
                     return super.onKeyDown(keyCode, event)
                 else {
+                    // 遷移していた場合は、遷移前に戻る
                     val data = transitions[transitions.lastIndex]
                     title = data.first
                     path = data.second
-                    val image = findViewById(R.id.image) as ImageView
-                    image.setImageBitmap(BitmapFactory.decodeByteArray(data.third, 0, data.third.size))
                     openData(data.third)
                     transitions.removeAt(transitions.lastIndex)
                     return true
@@ -75,6 +84,10 @@ class ImageActivity : AppCompatActivity(){
         return super.onKeyDown(keyCode, event)
     }
 
+    /**
+     * HTTPリクエストによって、画像を表示させる
+     * @param id 表示する画像のID
+     */
     fun openDataByRequest(id : String) {
         Log.d("REQUEST", id)
         (object :AsyncTask<Unit, Unit, Unit>(){
@@ -91,15 +104,17 @@ class ImageActivity : AppCompatActivity(){
 
             override fun onPostExecute(param: Unit?) {
                 Log.d("REQUESTED", id)
-                val bytes = out.toByteArray()
-                val image = findViewById(R.id.image) as ImageView
-                image.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes?.size ?: 0))
-                openData(bytes)
+                openData(out.toByteArray())
             }
         }).execute()
     }
 
     fun openData(bytes : ByteArray) {
+        // 画像をビューアに表示
+        val image = findViewById(R.id.image) as ImageView
+        image.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes?.size ?: 0))
+
+        // テキストデータからその画像のテキストを取得し、ついでにSHA1値を保存
         val data = TextData.parseFile(BufferedReader(InputStreamReader(openFileInput("text.db"))), path!!, bytes)
         sha1 = TextData.sha256(bytes)
         //データが空ならデフォルトの項目を追加する
@@ -111,22 +126,29 @@ class ImageActivity : AppCompatActivity(){
         }
         if(!data.containsKey("Date"))
             data["Date"] = SimpleDateFormat("yyyy/MM/dd").format(Date())
+
+        // もともと画像ビューア以外の要素が画面内にあるのならば、それを排除
         val base = findViewById(R.id.scroll_target) as LinearLayout
         (0..base.childCount-1).map { base.getChildAt(it) }.filterNot { it is ImageView }.forEach { base.removeView(it) }
+
         data.forEach {
+            // 必要な要素を追加
             val tv = TextView(this)
-            tv.text = it.key
             val ed = EditText(this)
-            ed.setText(it.value)
             val layout = findViewById(R.id.scroll_target) as LinearLayout
+            tv.text = it.key
+            ed.setText(it.value)
+            editTexts[it.key] = ed
             layout.addView(tv)
             layout.addView(ed)
+
+            // ハイパーリンクがあるなら、ボタンも追加する
             it.value.split('\n').filter { it.startsWith(">>") }.forEach {
                 val button = Button(this)
                 button.text = it.substring(2)
                 button.setOnClickListener { _ ->
                     val pair = searchQuery(it.substring(2))
-                    Log.d("PAIR", "${pair?.second}")
+                    Log.d("LINK", "${pair?.second}")
                     if(pair != null) {
                         transitions.add(Triple(title!!, path!!, bytes))
                         title = pair.first.title
@@ -136,7 +158,6 @@ class ImageActivity : AppCompatActivity(){
                 }
                 layout.addView(button)
             }
-            editTexts[it.key] = ed
         }
         created = true
     }
