@@ -98,7 +98,7 @@ class ImageActivity : AppCompatActivity(){
                     request?.alt = "media"
                     request?.executeAndDownloadTo(out)
                 } catch (e : SocketTimeoutException) {
-                    AlertDialog.Builder(applicationContext).setTitle("Time out").setMessage(e.message).create().show()
+                    Toast.makeText(applicationContext, "Time out", Toast.LENGTH_LONG).show()
                 }
             }
 

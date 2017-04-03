@@ -4,15 +4,23 @@ import android.Manifest
 import android.accounts.AccountManager
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.database.Cursor
+import android.net.Uri
 import android.os.AsyncTask
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.support.design.widget.FloatingActionButton
 import android.support.design.widget.NavigationView
 import android.support.v4.app.ActivityCompat
 import android.support.v4.content.ContextCompat
+import android.support.v4.content.FileProvider
 import android.support.v4.view.GravityCompat
 import android.support.v4.widget.DrawerLayout
 import android.support.v7.app.ActionBarDrawerToggle
@@ -23,15 +31,18 @@ import android.view.KeyEvent
 import android.view.Menu
 import android.view.MenuItem
 import android.widget.ListView
+import android.widget.Toast
 import com.google.api.client.extensions.android.http.AndroidHttp
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
 import com.google.api.client.googleapis.extensions.android.gms.auth.UserRecoverableAuthIOException
 import com.google.api.client.http.FileContent
 import com.google.api.client.json.gson.GsonFactory
+import com.google.api.services.drive.model.ParentReference
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.net.SocketTimeoutException
+import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.collections.ArrayList
 
@@ -58,6 +69,8 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
     private val REQUEST_ACCOUNT = 1
     private val MY_PERMISSIONS_REQUEST_READ_CONTACTS = 2
     private val REQUEST_AUTHORIZATION = 3
+    private val RESULT_CAMERA = 4
+    private val RESULT_PICK_IMAGEFILE = 5
 
     // 共通して使われるデータはCompanion Objectを使う
     companion object {
@@ -71,8 +84,12 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
     private var nowRoots = ArrayList<ListItem>()
     private var adapter : ImageArrayAdapter? = null
 
+    private var imagePath : String? = null
+    private var cameraUri : Uri? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.d("CREATE", "ON CREATE")
 
         // 初期情報取得
         val userName = getPreferences(Context.MODE_PRIVATE).getString("userName", null)
@@ -144,6 +161,23 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                     }
                 }
             }
+            // カメラ処理後に遷移
+            RESULT_CAMERA -> {
+                Log.d("Camera", "$cameraUri")
+                if(resultCode == Activity.RESULT_OK && cameraUri != null) {
+                    uploadToDrive()
+                }
+            }
+
+            //　イメージファイル選択処理後に遷移
+            RESULT_PICK_IMAGEFILE -> {
+                if (resultCode == Activity.RESULT_OK && data != null) {
+                    imagePath = getPathFromUri(data.data)
+                    Log.i("URI", "Uri ${data.data} Path: $imagePath")
+                    if(imagePath != null)
+                        uploadToDrive()
+                }
+            }
         }
     }
 
@@ -167,8 +201,8 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
             R.id.action_user -> { startActivityForResult(credential?.newChooseAccountIntent(), REQUEST_ACCOUNT); return true }
             R.id.action_sync_file -> { syncData(); return true }
             R.id.action_upload_file -> { uploadData(); return true }
-            R.id.action_upload_camera -> { uploadData(); return true }
-            R.id.action_upload_gallery -> { uploadData(); return true }
+            R.id.action_upload_camera -> { uploadByCamera(); return true }
+            R.id.action_upload_gallery -> { uploadByGallery(); return true }
         }
         return super.onOptionsItemSelected(item)
     }
@@ -221,6 +255,10 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.INTERNET) != PackageManager.PERMISSION_GRANTED) {
             if (!ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.INTERNET))
                 ActivityCompat.requestPermissions(this, Array(1, {Manifest.permission.INTERNET}), MY_PERMISSIONS_REQUEST_READ_CONTACTS)
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            if (!ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.WRITE_EXTERNAL_STORAGE))
+                ActivityCompat.requestPermissions(this, Array(1, {Manifest.permission.WRITE_EXTERNAL_STORAGE}), MY_PERMISSIONS_REQUEST_READ_CONTACTS)
         }
     }
 
@@ -481,10 +519,96 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
     }
 
     fun uploadByCamera() {
+        // 保存先のフォルダーを作成
+        val cameraFolder = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "IMG")
+        cameraFolder.mkdirs();
 
+        // 保存ファイル名
+        imagePath = "${cameraFolder.path}/${SimpleDateFormat("ddHHmmss").format(Date())}.jpg"
+        Log.d("CAMERA","filePath is $imagePath")
+
+        // capture画像のファイルパス
+        cameraUri = FileProvider.getUriForFile(this, "${applicationContext.packageName}.provider", File(imagePath))
+
+        val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+        intent.putExtra(MediaStore.EXTRA_OUTPUT, cameraUri)
+        startActivityForResult(intent, RESULT_CAMERA)
+    }
+    fun uploadToDrive() {
+        (object : AsyncTask<Void, Void, Unit>() {
+            override fun doInBackground(vararg params: Void?){
+                try {
+                    val image = File(imagePath)
+                    val file = com.google.api.services.drive.model.File().setTitle(image.name).setMimeType("image/jpeg")
+                            .setParents(Arrays.asList(ParentReference().setId(nowRoots.last().id)))
+                    val media = FileContent("image/jpeg", image)
+                    MainActivity.service?.files()?.insert(file, media)?.execute()
+                    Log.d("UPLOAD", "UPLOADED image to drive")
+                } catch (e: UserRecoverableAuthIOException) {
+                    startActivityForResult(e.intent, REQUEST_AUTHORIZATION)
+                } catch (e: IOException) {
+                    Toast.makeText(applicationContext, "Sync Error", Toast.LENGTH_LONG).show()
+                } catch (e: SocketTimeoutException) {
+                    Toast.makeText(applicationContext, "Time out", Toast.LENGTH_LONG).show()
+                }
+            }
+        }).execute()
     }
 
-    fun uploadByGallery() {
 
+    fun uploadByGallery() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+        intent.addCategory(Intent.CATEGORY_OPENABLE)
+        intent.type = "image/*"
+        startActivityForResult(intent, RESULT_PICK_IMAGEFILE)
+    }
+
+    fun getPathFromUri(uri : Uri) : String? {
+       val isAfterKitKat = Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT;
+        // DocumentProvider
+        Log.d("URI","uri:${uri.authority}")
+        if (isAfterKitKat && DocumentsContract.isDocumentUri(this, uri)) {
+            if ("com.android.externalstorage.documents" == uri.authority) {
+                // ExternalStorageProvider
+                val split = DocumentsContract.getDocumentId(uri).split(":")
+                val type = split[0]
+                if ("primary".equals(type, true)) {
+                    return "${Environment.getExternalStorageDirectory()}/${split[1]}"
+                }else {
+                    return "/stroage/$type/${split[1]}"
+                }
+            }else if ("com.android.providers.downloads.documents" == uri.authority) {
+                // DownloadsProvider
+                val id = DocumentsContract.getDocumentId(uri)
+                val contentUri = ContentUris.withAppendedId(Uri.parse("content://downloads/public_downloads"), id.toLong())
+                return getDataColumn(contentUri, null, null)
+            }else if ("com.android.providers.media.documents" == uri.authority) {
+                // MediaProvider
+                val split = DocumentsContract.getDocumentId(uri).split(":")
+                return getDataColumn(MediaStore.Files.getContentUri("external"), "_id=?", Array(1, {split[1]}))
+            }
+        }else if ("content".equals(uri.scheme, true)) {
+            //MediaStore
+            return getDataColumn(uri, null, null)
+        }else if ("file".equals(uri.scheme, true)) {
+            // File
+            return uri.path
+        }
+        return null;
+    }
+
+    fun getDataColumn(uri : Uri, selection : String?, selectionArgs : Array<String>?) : String? {
+        var cursor : Cursor? = null;
+        val projection = Array(1, {MediaStore.Files.FileColumns.DATA})
+        try {
+            cursor = getContentResolver().query(uri, projection, selection, selectionArgs, null)
+            if (cursor != null && cursor.moveToFirst()) {
+                return cursor.getString(cursor.getColumnIndexOrThrow(projection[0]))
+            }
+        } finally {
+            if (cursor != null)
+                cursor.close();
+        }
+        return null;
     }
 }
