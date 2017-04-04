@@ -32,15 +32,11 @@ dependencies {
     compile "org.jetbrains.kotlin:kotlin-stdlib-jre7:$kotlin_version"
 
     compile "com.google.android.gms:play-services-drive:10.2.1"
+    compile 'com.google.android.gms:play-services-auth:10.2.1'
+    compile 'com.google.apis:google-api-services-drive:v2-rev96-1.16.0-rc'
     compile 'com.google.api-client:google-api-client:1.20.0'
     compile 'com.google.api-client:google-api-client-android:1.20.0'
-
-    compile 'com.google.apis:google-api-services-drive:v2-rev96-1.16.0-rc'
     compile 'com.google.http-client:google-http-client-gson:1.16.0-rc'
-
-    compile 'com.google.android.gms:play-services-auth:10.2.1'
-
-    compile 'com.google.oauth-client:google-oauth-client-jetty:1.22.0'
 }
 
 repositories {

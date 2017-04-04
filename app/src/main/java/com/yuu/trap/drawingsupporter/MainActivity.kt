@@ -4,16 +4,14 @@ import android.Manifest
 import android.accounts.AccountManager
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.ProgressDialog
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.Cursor
 import android.net.Uri
-import android.os.AsyncTask
-import android.os.Build
-import android.os.Bundle
-import android.os.Environment
+import android.os.*
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.support.design.widget.FloatingActionButton
@@ -30,6 +28,7 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.Menu
 import android.view.MenuItem
+import android.widget.EditText
 import android.widget.ListView
 import android.widget.Toast
 import com.google.api.client.extensions.android.http.AndroidHttp
@@ -80,22 +79,32 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
         var syncRoot : ListItem? = null
     }
 
-    private val remainTask = ArrayList<Boolean>()
+    private val remainTask = ArrayList<AsyncTask<Void, Void, Unit>>()
     private var nowRoots = ArrayList<ListItem>()
     private var adapter : ImageArrayAdapter? = null
 
     private var imagePath : String? = null
     private var cameraUri : Uri? = null
 
+    private var progress : ProgressDialog? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.d("CREATE", "ON CREATE")
 
-        // 初期情報取得
-        val userName = getPreferences(Context.MODE_PRIVATE).getString("userName", null)
-
         // 権限の許可
         checkPermission()
+
+        startUp()
+    }
+
+    /**
+     * 権限の認証後に行われる初期設定
+     */
+    fun startUp() {
+        Log.d("START", "ON START")
+        // 初期情報取得
+        val userName = getPreferences(Context.MODE_PRIVATE).getString("userName", null)
 
         credential = GoogleAccountCredential.usingOAuth2(this, Arrays.asList("https://www.googleapis.com/auth/drive"))
         // 保存されたユーザー名があるならば設定
@@ -148,6 +157,9 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         when(requestCode) {
+            // 権限認証後に遷移
+            MY_PERMISSIONS_REQUEST_READ_CONTACTS -> startUp()
+
             // ユーザー設定後に遷移
             REQUEST_ACCOUNT -> {
                 if(resultCode == Activity.RESULT_OK && data != null && data.extras != null) {
@@ -176,6 +188,8 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                     Log.i("URI", "Uri ${data.data} Path: $imagePath")
                     if(imagePath != null)
                         uploadToDrive()
+                    else
+                        displayToast("Upload Error -- Can't get file path")
                 }
             }
         }
@@ -236,8 +250,8 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
      */
     fun back() {
         // 現在のルートに親があるならば、そこに戻る
-        Log.d("BACK", nowRoots.map { it.title }.reduceRight { s, acc -> s + "/" + acc })
         if(nowRoots.size > 1) {
+            Log.d("BACK", nowRoots.map { it.title }.reduceRight { s, acc -> s + "/" + acc })
             nowRoots.removeAt(nowRoots.lastIndex)
             val element = nowRoots.removeAt(nowRoots.lastIndex)
             addElements(element)
@@ -246,20 +260,22 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
 
     /**
      * 認証状態を調べ、認証されていなければ、認証のダイアログを出す
+     * @return 権限が既にすべて認められているかどうか
      */
-    fun checkPermission() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.GET_ACCOUNTS) != PackageManager.PERMISSION_GRANTED) {
+    fun checkPermission() : Boolean {
+        val permissions = ArrayList<String>()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.GET_ACCOUNTS) != PackageManager.PERMISSION_GRANTED)
             if (!ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.GET_ACCOUNTS))
-                ActivityCompat.requestPermissions(this, Array(1, {Manifest.permission.GET_ACCOUNTS}), MY_PERMISSIONS_REQUEST_READ_CONTACTS)
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.INTERNET) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.GET_ACCOUNTS)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.INTERNET) != PackageManager.PERMISSION_GRANTED)
             if (!ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.INTERNET))
-                ActivityCompat.requestPermissions(this, Array(1, {Manifest.permission.INTERNET}), MY_PERMISSIONS_REQUEST_READ_CONTACTS)
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.INTERNET)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
             if (!ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.WRITE_EXTERNAL_STORAGE))
-                ActivityCompat.requestPermissions(this, Array(1, {Manifest.permission.WRITE_EXTERNAL_STORAGE}), MY_PERMISSIONS_REQUEST_READ_CONTACTS)
-        }
+                permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        if(permissions.isNotEmpty())
+            ActivityCompat.requestPermissions(this, permissions.toTypedArray(), MY_PERMISSIONS_REQUEST_READ_CONTACTS)
+        return permissions.isEmpty()
     }
 
     /**
@@ -267,6 +283,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
      */
     fun syncDrive() {
         searchDrawingSupporter()
+        showProgress()
     }
 
     /**
@@ -278,24 +295,23 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                 try {
                     val dataID = getSyncDataID()
                     if(dataID != null) {
-                        (object :AsyncTask<Unit, Unit, Unit>(){
-                            val out = ByteArrayOutputStream()
-                            override fun doInBackground(vararg params: Unit?) = MainActivity.service?.files()?.get(dataID)?.setAlt("media")?.executeAndDownloadTo(out)
-                            override fun onPostExecute(param: Unit?) {
-                                openFileOutput("text.db", Context.MODE_PRIVATE).write(out.toByteArray())
-                                Log.d("SYNC", "Downloads Ended")
-                            }
-                        }).execute()
+                        val out = ByteArrayOutputStream()
+                        MainActivity.service?.files()?.get(dataID)?.setAlt("media")?.executeAndDownloadTo(out)
+                        openFileOutput("text.db", Context.MODE_PRIVATE).write(out.toByteArray())
+                        Log.d("SYNC", "Downloads Ended")
                     }
                 } catch (e: UserRecoverableAuthIOException) {
                     startActivityForResult(e.intent, REQUEST_AUTHORIZATION)
                 } catch (e: IOException) {
-                    AlertDialog.Builder(applicationContext).setTitle("Sync Error").setMessage(e.message).create().show()
+                    displaySyncError()
                 } catch (e: SocketTimeoutException) {
-                    AlertDialog.Builder(applicationContext).setTitle("Time out").setMessage(e.message).create().show()
+                    displayTimeOut()
+                } finally {
+                    hideProgress()
                 }
             }
         }).execute()
+        showProgress()
     }
 
     /**
@@ -307,25 +323,23 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                 try {
                     val dataID = getSyncDataID()
                     if(dataID != null) {
-                        (object :AsyncTask<Unit, Unit, Unit>(){
-                            override fun doInBackground(vararg params: Unit?) {
-                                val file = MainActivity.service?.files()?.get(dataID)?.execute()
-                                val media = FileContent(file?.mimeType, File("$filesDir/text.db"))
-                                MainActivity.service?.files()?.update(dataID, file, media)?.execute()
-                                Log.d("UPLOAD", "UPLOADED")
-                            }
-                        }).execute()
+                        val file = MainActivity.service?.files()?.get(dataID)?.execute()
+                        val media = FileContent(file?.mimeType, File("$filesDir/text.db"))
+                        MainActivity.service?.files()?.update(dataID, file, media)?.execute()
+                        Log.d("UPLOAD", "UPLOADED")
                     }
                 } catch (e: UserRecoverableAuthIOException) {
                     startActivityForResult(e.intent, REQUEST_AUTHORIZATION)
                 } catch (e: IOException) {
-                    AlertDialog.Builder(applicationContext).setTitle("Sync Error").setMessage(e.message).create().show()
+                    displaySyncError()
                 } catch (e: SocketTimeoutException) {
-                    AlertDialog.Builder(applicationContext).setTitle("Time out").setMessage(e.message).create().show()
+                    displayTimeOut()
+                } finally {
+                    hideProgress()
                 }
             }
         }).execute()
-
+        showProgress()
     }
 
     /**
@@ -373,13 +387,15 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                         }
                         token = result?.nextPageToken
                     } while(token != null)
-                } catch (e: SocketTimeoutException) {
-                    Log.d("SEARCH", "RETRY")
-                    doInBackground()
-                } catch (e: IOException) {
-                    AlertDialog.Builder(applicationContext).setTitle("Sync Error").setMessage(e.message).create().show()
                 } catch (e: UserRecoverableAuthIOException) {
                     startActivityForResult(e.intent, REQUEST_AUTHORIZATION)
+                    hideProgress()
+                } catch (e: IOException) {
+                    displaySyncError()
+                    hideProgress()
+                } catch (e: SocketTimeoutException) {
+                    displayToast("Time out -- Retry")
+                    doInBackground()
                 }
             }
         }).execute()
@@ -392,9 +408,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
      */
     fun expandFolder(id : String, root : ListItem) {
         Log.d("EXPAND", "ID is $id")
-        // 再帰処理が終わった判定を行うため、この処理が開始した段階で一つ追加する
-        remainTask.add(true)
-        (object : AsyncTask<Void, Void, Unit>() {
+        val task = (object : AsyncTask<Void, Void, Unit>() {
             override fun doInBackground(vararg params: Void?){
                 var token : String? = null
                 try {
@@ -416,12 +430,20 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                         token = result?.nextPageToken
                     } while(token != null)
                     // 再帰処理が終わった判定を行うため、この処理が開始した段階で一つ減らす
-                    remainTask.removeAt(remainTask.size - 1)
-                } catch (e: SocketTimeoutException) {
-                    Log.d("EXPAND", "RETRY")
-                    doInBackground()
+                    remainTask.remove(this)
                 } catch (e: UserRecoverableAuthIOException) {
+                    remainTask.forEach { it.cancel(true) }
+                    remainTask.clear()
                     startActivityForResult(e.intent, REQUEST_AUTHORIZATION)
+                    hideProgress()
+                } catch (e: IOException) {
+                    remainTask.forEach { it.cancel(true) }
+                    remainTask.clear()
+                    displaySyncError()
+                    hideProgress()
+                } catch (e: SocketTimeoutException) {
+                    displayToast("Time out -- Retry")
+                    doInBackground()
                 }
             }
             override fun onPostExecute(result: Unit?) {
@@ -430,9 +452,13 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                     nowRoots.clear()
                     addElements(syncRoot!!)
                     parseListItem()
+                    hideProgress()
                 }
             }
-        }).execute()
+        })
+        // 再帰処理が終わった判定を行うため、この処理が開始した段階で一つ追加する
+        remainTask.add(task)
+        task.execute()
     }
 
     /**
@@ -451,6 +477,20 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
 
         // 現在の展開元までのリストを更新
         nowRoots.add(root)
+    }
+
+    /**
+     * 現在のリストを更新する
+     */
+    fun updateElements() {
+        // リストの要素をすべて消す
+        adapter?.clear()
+
+        // リストにフォルダの子を名前でソートしてすべて追加
+        nowRoots.last().children.sortedBy { it.title }.forEach {
+            adapter?.add(it)
+        }
+        adapter?.notifyDataSetChanged()
     }
 
     /**
@@ -480,8 +520,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
         var processingItem : ListItem? = null
         val parents = ArrayList<ListItem>()
         val listData = getPreferences(Context.MODE_PRIVATE).getString("listData", null)
-        Log.d("UNPARSE", "UnparseStart")
-        if(listData != null) {
+        if(listData != null && listData.isNotBlank()) {
             listData.lines().forEach {
                 when {
                     // { は新規リスト要素を作成し、親が存在するならそこに格納しつつ、新たな親を作る
@@ -499,8 +538,8 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                 }
             }
         }
-        Log.d("UNPARSE", "${parents[0].title} -> ${parents[0].children[0].title}}")
         if(parents.isNotEmpty()) {
+            Log.d("UNPARSE", "${parents[0].title} -> ${parents[0].children[0].title}}")
             syncRoot = parents[0]
             addElements(syncRoot!!)
         }
@@ -521,7 +560,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
     fun uploadByCamera() {
         // 保存先のフォルダーを作成
         val cameraFolder = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "IMG")
-        cameraFolder.mkdirs();
+        cameraFolder.mkdirs()
 
         // 保存ファイル名
         imagePath = "${cameraFolder.path}/${SimpleDateFormat("ddHHmmss").format(Date())}.jpg"
@@ -535,24 +574,40 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
         startActivityForResult(intent, RESULT_CAMERA)
     }
     fun uploadToDrive() {
-        (object : AsyncTask<Void, Void, Unit>() {
-            override fun doInBackground(vararg params: Void?){
-                try {
-                    val image = File(imagePath)
-                    val file = com.google.api.services.drive.model.File().setTitle(image.name).setMimeType("image/jpeg")
-                            .setParents(Arrays.asList(ParentReference().setId(nowRoots.last().id)))
-                    val media = FileContent("image/jpeg", image)
-                    MainActivity.service?.files()?.insert(file, media)?.execute()
-                    Log.d("UPLOAD", "UPLOADED image to drive")
-                } catch (e: UserRecoverableAuthIOException) {
-                    startActivityForResult(e.intent, REQUEST_AUTHORIZATION)
-                } catch (e: IOException) {
-                    Toast.makeText(applicationContext, "Sync Error", Toast.LENGTH_LONG).show()
-                } catch (e: SocketTimeoutException) {
-                    Toast.makeText(applicationContext, "Time out", Toast.LENGTH_LONG).show()
-                }
-            }
-        }).execute()
+        val image = File(imagePath)
+        val editView = EditText(this)
+        editView.setText(image.nameWithoutExtension)
+        AlertDialog.Builder(this).setIcon(android.R.drawable.ic_dialog_info).setTitle("アップロードするファイル名").setView(editView)
+                .setPositiveButton("OK", { _ , _->
+                    (object : AsyncTask<Void, Void, Unit>() {
+                        override fun doInBackground(vararg params: Void?){
+                            try {
+                                val file = com.google.api.services.drive.model.File().setTitle("${editView.text}.${image.extension}").setMimeType("image/jpeg")
+                                        .setParents(Arrays.asList(ParentReference().setId(nowRoots.last().id)))
+                                val media = FileContent("image/jpeg", image)
+                                val result = MainActivity.service?.files()?.insert(file, media)?.execute()
+                                nowRoots.last().children.add(ListItem(result!!.id, false, result.title, nowRoots.last(), ArrayList()))
+                                Log.d("UPLOAD", "UPLOADED image to drive")
+                            } catch (e: UserRecoverableAuthIOException) {
+                                startActivityForResult(e.intent, REQUEST_AUTHORIZATION)
+                            } catch (e: IOException) {
+                                displaySyncError()
+                            } catch (e: SocketTimeoutException) {
+                                displayTimeOut()
+                            } finally {
+                                hideProgress()
+                            }
+                        }
+
+                        override fun onPostExecute(result: Unit?) {
+                            updateElements()
+                        }
+                    }).execute()
+                    showProgress()
+                })
+                .setNegativeButton("Cancel", { _, _ ->
+
+                }).show()
     }
 
 
@@ -564,7 +619,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
     }
 
     fun getPathFromUri(uri : Uri) : String? {
-       val isAfterKitKat = Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT;
+       val isAfterKitKat = Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT
         // DocumentProvider
         Log.d("URI","uri:${uri.authority}")
         if (isAfterKitKat && DocumentsContract.isDocumentUri(this, uri)) {
@@ -594,21 +649,40 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
             // File
             return uri.path
         }
-        return null;
+        return null
     }
 
     fun getDataColumn(uri : Uri, selection : String?, selectionArgs : Array<String>?) : String? {
-        var cursor : Cursor? = null;
+        var cursor : Cursor? = null
         val projection = Array(1, {MediaStore.Files.FileColumns.DATA})
         try {
-            cursor = getContentResolver().query(uri, projection, selection, selectionArgs, null)
+            cursor = contentResolver.query(uri, projection, selection, selectionArgs, null)
             if (cursor != null && cursor.moveToFirst()) {
                 return cursor.getString(cursor.getColumnIndexOrThrow(projection[0]))
             }
         } finally {
             if (cursor != null)
-                cursor.close();
+                cursor.close()
         }
-        return null;
+        return null
     }
+
+    fun showProgress() {
+        progress = ProgressDialog(this)
+        progress?.setProgressStyle(ProgressDialog.STYLE_SPINNER)
+        progress?.setMessage("処理を実行中です")
+        progress?.setCancelable(true)
+        progress?.show()
+    }
+
+    fun hideProgress() {
+        if(progress != null) {
+            progress?.dismiss()
+            progress = null
+        }
+    }
+
+    fun displaySyncError() = displayToast("Sync Error")
+    fun displayTimeOut() = displayToast("Time Out")
+    fun displayToast(msg : String) = Handler(application.mainLooper).post({ Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT).show() })
 }

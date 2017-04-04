@@ -1,14 +1,15 @@
 package com.yuu.trap.drawingsupporter
 
-import android.app.AlertDialog
 import android.graphics.BitmapFactory
 import android.os.AsyncTask
 import android.os.Bundle
+import android.os.Handler
 import android.support.design.widget.FloatingActionButton
 import android.support.v7.app.AppCompatActivity
 import android.util.Log
 import android.view.KeyEvent
 import android.widget.*
+import com.google.api.client.googleapis.extensions.android.gms.auth.UserRecoverableAuthIOException
 import com.yuu.trap.drawingsupporter.text.TextData
 import java.io.*
 import java.net.SocketTimeoutException
@@ -42,6 +43,8 @@ class ImageActivity : AppCompatActivity(){
 
     private val transitions = ArrayList<Triple<String, String, ByteArray>>()
 
+    private val executingTasks = ArrayList<AsyncTask<Unit, Unit, Unit>>()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -67,15 +70,19 @@ class ImageActivity : AppCompatActivity(){
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         when(keyCode) {
             KeyEvent.KEYCODE_BACK -> {
-                if(transitions.isEmpty())
+                if(transitions.isEmpty()) {
+                    executingTasks.forEach { it.cancel(true) }
+                    executingTasks.clear()
                     return super.onKeyDown(keyCode, event)
-                else {
+                } else {
                     // 遷移していた場合は、遷移前に戻る
                     val data = transitions[transitions.lastIndex]
                     title = data.first
                     path = data.second
                     openData(data.third)
                     transitions.removeAt(transitions.lastIndex)
+                    executingTasks.forEach { it.cancel(true) }
+                    executingTasks.clear()
                     return true
                 }
 
@@ -90,15 +97,22 @@ class ImageActivity : AppCompatActivity(){
      */
     fun openDataByRequest(id : String) {
         Log.d("REQUEST", id)
-        (object :AsyncTask<Unit, Unit, Unit>(){
+        val task = (object :AsyncTask<Unit, Unit, Unit>(){
             val out = ByteArrayOutputStream()
             override fun doInBackground(vararg params: Unit?) {
                 try {
-                    val request = MainActivity.service?.files()?.get(id)
-                    request?.alt = "media"
-                    request?.executeAndDownloadTo(out)
+                    MainActivity.service?.files()?.get(id)?.setAlt("media")?.executeAndDownloadTo(out)
+                } catch (e: UserRecoverableAuthIOException) {
+                    displayToast("Auth Error")
+                    cancel(true)
+                } catch (e: IOException) {
+                    displaySyncError()
+                    cancel(true)
                 } catch (e : SocketTimeoutException) {
-                    Toast.makeText(applicationContext, "Time out", Toast.LENGTH_LONG).show()
+                    displayTimeOut()
+                    cancel(true)
+                } finally {
+                    executingTasks.remove(this)
                 }
             }
 
@@ -106,13 +120,15 @@ class ImageActivity : AppCompatActivity(){
                 Log.d("REQUESTED", id)
                 openData(out.toByteArray())
             }
-        }).execute()
+        })
+        executingTasks.add(task)
+        task.execute()
     }
 
     fun openData(bytes : ByteArray) {
         // 画像をビューアに表示
         val image = findViewById(R.id.image) as ImageView
-        image.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes?.size ?: 0))
+        image.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
 
         // テキストデータからその画像のテキストを取得し、ついでにSHA1値を保存
         val data = TextData.parseFile(BufferedReader(InputStreamReader(openFileInput("text.db"))), path!!, bytes)
@@ -125,7 +141,7 @@ class ImageActivity : AppCompatActivity(){
             data["Other"] = ""
         }
         if(!data.containsKey("Date"))
-            data["Date"] = SimpleDateFormat("yyyy/MM/dd").format(Date())
+            data["Date"] = SimpleDateFormat("yyyy/MM/dd", Locale.JAPANESE).format(Date())
 
         // もともと画像ビューア以外の要素が画面内にあるのならば、それを排除
         val base = findViewById(R.id.scroll_target) as LinearLayout
@@ -190,4 +206,7 @@ class ImageActivity : AppCompatActivity(){
         }
     }
 
+    fun displaySyncError() = displayToast("Sync Error")
+    fun displayTimeOut() = displayToast("Time Out")
+    fun displayToast(msg : String) = Handler(application.mainLooper).post({ Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT).show() })
 }
