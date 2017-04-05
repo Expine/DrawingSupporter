@@ -36,6 +36,7 @@ import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccoun
 import com.google.api.client.googleapis.extensions.android.gms.auth.UserRecoverableAuthIOException
 import com.google.api.client.http.FileContent
 import com.google.api.client.json.gson.GsonFactory
+import com.google.api.client.util.DateTime
 import com.google.api.services.drive.model.ParentReference
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -70,6 +71,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
     private val REQUEST_AUTHORIZATION = 3
     private val RESULT_CAMERA = 4
     private val RESULT_PICK_IMAGEFILE = 5
+    private val AFTER_IMAGE = 6
 
     // 共通して使われるデータはCompanion Objectを使う
     companion object {
@@ -190,6 +192,25 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                         uploadToDrive()
                     else
                         displayToast("Upload Error -- Can't get file path")
+                }
+            }
+
+            // イメージビューア後
+            AFTER_IMAGE -> {
+                if(resultCode == Activity.RESULT_OK) {
+                    val name = intent.getStringExtra("RENAME")
+                    val id = intent.getStringExtra("RENAME_ID")
+                    if(name != null && id != null) {
+                        nowRoots?.filter { it.id == id }.forEach { it.title = name }
+                        updateElements()
+                        parseListItem()
+                    }
+                    val delete = intent.getStringExtra("DELETE")
+                    if(delete != null) {
+                        nowRoots?.filter { it.id == delete }.forEach { it.parent?.children?.remove(it) }
+                        updateElements()
+                        parseListItem()
+                    }
                 }
             }
         }
@@ -498,7 +519,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
      */
     fun parseListItem(){
         Log.d("PARSE", "Parse Start")
-        val result = if(syncRoot != null) parseListItem(syncRoot!!, 0) else ""
+        val result = if(Companion.syncRoot != null) parseListItem(Companion.syncRoot!!, 0) else ""
         getPreferences(Context.MODE_PRIVATE).edit().putString("listData", result).commit()
         Log.d("PARSE", "Parse Written")
     }
@@ -554,7 +575,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                 .putExtra("Image", item.id)
                 .putExtra("Title", item.title)
                 .putExtra("Path", nowRoots.map { it.title }.reduceRight { s, acc -> s + "/" + acc })
-        startActivity(intent)
+        startActivityForResult(intent, AFTER_IMAGE)
     }
 
     fun uploadByCamera() {
@@ -583,7 +604,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                         override fun doInBackground(vararg params: Void?){
                             try {
                                 val file = com.google.api.services.drive.model.File().setTitle("${editView.text}.${image.extension}").setMimeType("image/jpeg")
-                                        .setParents(Arrays.asList(ParentReference().setId(nowRoots.last().id)))
+                                        .setParents(Arrays.asList(ParentReference().setId(nowRoots.last().id))).setModifiedDate(DateTime(Date(image.lastModified())))
                                 val media = FileContent("image/jpeg", image)
                                 val result = MainActivity.service?.files()?.insert(file, media)?.execute()
                                 nowRoots.last().children.add(ListItem(result!!.id, false, result.title, nowRoots.last(), ArrayList()))
@@ -601,6 +622,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
 
                         override fun onPostExecute(result: Unit?) {
                             updateElements()
+                            parseListItem()
                         }
                     }).execute()
                     showProgress()

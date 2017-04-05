@@ -1,5 +1,8 @@
 package com.yuu.trap.drawingsupporter
 
+import android.app.Activity
+import android.app.AlertDialog
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.os.AsyncTask
 import android.os.Bundle
@@ -8,8 +11,14 @@ import android.support.design.widget.FloatingActionButton
 import android.support.v7.app.AppCompatActivity
 import android.util.Log
 import android.view.KeyEvent
+import android.view.Menu
+import android.view.MenuItem
 import android.widget.*
 import com.google.api.client.googleapis.extensions.android.gms.auth.UserRecoverableAuthIOException
+import com.google.api.client.http.FileContent
+import com.google.api.client.util.DateTime
+import com.google.api.services.drive.model.File
+import com.google.api.services.drive.model.ParentReference
 import com.yuu.trap.drawingsupporter.text.TextData
 import java.io.*
 import java.net.SocketTimeoutException
@@ -33,15 +42,18 @@ import kotlin.collections.HashMap
  * @property transitions ハイパーリンクで移動した際の、元のタイトル、パス、画像のバイト配列を保存する。
  */
 class ImageActivity : AppCompatActivity(){
+    data class TransitionData(val id: String, val title: String, val path: String, val bytes : ByteArray)
+
     private var created = false
 
     private val editTexts = HashMap<String, EditText>()
 
+    private var id : String? = null
     private var title : String? = null
     private var path : String? = null
     private var sha1 : String? = null
 
-    private val transitions = ArrayList<Triple<String, String, ByteArray>>()
+    private val transitions = ArrayList<TransitionData>()
 
     private val executingTasks = ArrayList<AsyncTask<Unit, Unit, Unit>>()
 
@@ -62,9 +74,9 @@ class ImageActivity : AppCompatActivity(){
             finish()
         }
 
-        val id = intent.getStringExtra("Image")
+        id = intent.getStringExtra("Image")
         if(id != null)
-            openDataByRequest(id)
+            openDataByRequest(id!!)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -77,9 +89,10 @@ class ImageActivity : AppCompatActivity(){
                 } else {
                     // 遷移していた場合は、遷移前に戻る
                     val data = transitions[transitions.lastIndex]
-                    title = data.first
-                    path = data.second
-                    openData(data.third)
+                    id = data.id
+                    title = data.title
+                    path = data.path
+                    openData(data.bytes, null)
                     transitions.removeAt(transitions.lastIndex)
                     executingTasks.forEach { it.cancel(true) }
                     executingTasks.clear()
@@ -91,6 +104,19 @@ class ImageActivity : AppCompatActivity(){
         return super.onKeyDown(keyCode, event)
     }
 
+    override fun onCreateOptionsMenu(menu: Menu?): Boolean {
+        menuInflater.inflate(R.menu.image_menu, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        when(item.itemId) {
+            R.id.action_rename -> { rename(); return true }
+            R.id.action_delete -> { delete(); return true }
+        }
+        return super.onOptionsItemSelected(item)
+    }
+
     /**
      * HTTPリクエストによって、画像を表示させる
      * @param id 表示する画像のID
@@ -99,8 +125,10 @@ class ImageActivity : AppCompatActivity(){
         Log.d("REQUEST", id)
         val task = (object :AsyncTask<Unit, Unit, Unit>(){
             val out = ByteArrayOutputStream()
+            var file : File? = null
             override fun doInBackground(vararg params: Unit?) {
                 try {
+                    file = MainActivity.service?.files()?.get(id)?.execute()
                     MainActivity.service?.files()?.get(id)?.setAlt("media")?.executeAndDownloadTo(out)
                 } catch (e: UserRecoverableAuthIOException) {
                     displayToast("Auth Error")
@@ -118,14 +146,14 @@ class ImageActivity : AppCompatActivity(){
 
             override fun onPostExecute(param: Unit?) {
                 Log.d("REQUESTED", id)
-                openData(out.toByteArray())
+                openData(out.toByteArray(), file)
             }
         })
         executingTasks.add(task)
         task.execute()
     }
 
-    fun openData(bytes : ByteArray) {
+    fun openData(bytes : ByteArray, file: File?) {
         // 画像をビューアに表示
         val image = findViewById(R.id.image) as ImageView
         image.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
@@ -140,8 +168,9 @@ class ImageActivity : AppCompatActivity(){
             data["Tips"] = ""
             data["Other"] = ""
         }
+        Log.d("DATE", "File is ${file == null} and ${file?.modifiedDate?.value}")
         if(!data.containsKey("Date"))
-            data["Date"] = SimpleDateFormat("yyyy/MM/dd", Locale.JAPANESE).format(Date())
+            data["Date"] = SimpleDateFormat("yyyy/MM/dd", Locale.JAPANESE).format(if(file == null) Date() else  Date(file.modifiedDate.value))
 
         // もともと画像ビューア以外の要素が画面内にあるのならば、それを排除
         val base = findViewById(R.id.scroll_target) as LinearLayout
@@ -166,7 +195,7 @@ class ImageActivity : AppCompatActivity(){
                     val pair = searchQuery(it.substring(2))
                     Log.d("LINK", "${pair?.second}")
                     if(pair != null) {
-                        transitions.add(Triple(title!!, path!!, bytes))
+                        transitions.add(TransitionData(id!!, title!!, path!!, bytes))
                         title = pair.first.title
                         path = pair.second
                         openDataByRequest(pair.first.id)
@@ -204,6 +233,79 @@ class ImageActivity : AppCompatActivity(){
             else
                 return null
         }
+    }
+    fun searchQueryByID(id : String) : ListItem?{
+        return searchQueryByID(id, MainActivity.syncRoot!!)
+    }
+    fun searchQueryByID(id : String, item : ListItem) : ListItem?{
+        if(item.isFolder)
+            return item.children.map { searchQueryByID(id, it) }.filter { it != null }.firstOrNull()
+        else {
+            if(id == item.id)
+                return item
+            else
+                return null
+        }
+    }
+
+    fun rename() {
+        val editView = EditText(this)
+        editView.setText(title)
+        AlertDialog.Builder(this).setIcon(android.R.drawable.ic_dialog_info).setTitle("リネーム").setView(editView)
+                .setPositiveButton("OK", { _ , _->
+                    (object : AsyncTask<Void, Void, Unit>() {
+                        override fun doInBackground(vararg params: Void?){
+                            try {
+                                val file = MainActivity.service?.files()?.get(id)?.execute()?.setTitle(editView.text.toString())
+                                MainActivity.service?.files()?.update(id, file)?.execute()
+                                searchQueryByID(id!!)?.title = editView.text.toString()
+                                setResult(Activity.RESULT_OK, Intent().putExtra("RENAME", editView.text.toString()).putExtra("RENAME_ID", id))
+                                Log.d("RENAME", "Rename to ${editView.text}")
+                            } catch (e: UserRecoverableAuthIOException) {
+                                displayToast("Auth Error")
+                            } catch (e: IOException) {
+                                displaySyncError()
+                            } catch (e: SocketTimeoutException) {
+                                displayTimeOut()
+                            }
+                        }
+                    }).execute()
+                })
+                .setNegativeButton("Cancel", { _, _ ->
+
+                }).show()
+    }
+
+    fun delete() {
+        AlertDialog.Builder(this).setTitle("削除の確認").setMessage("本当に削除しますか？")
+                .setPositiveButton("OK", { _, _ ->
+                    (object : AsyncTask<Void, Void, Unit>() {
+                        override fun doInBackground(vararg params: Void?){
+                            try {
+                                MainActivity.service?.files()?.delete(id)?.execute()
+                                val item = searchQueryByID(id!!)
+                                if(item != null) {
+                                    item.parent?.children?.remove(item)
+                                    setResult(Activity.RESULT_OK, Intent().putExtra("DELETE", id))
+                                }
+                            } catch (e: UserRecoverableAuthIOException) {
+                                displayToast("Auth Error")
+                            } catch (e: IOException) {
+                                displaySyncError()
+                            } catch (e: SocketTimeoutException) {
+                                displayTimeOut()
+                            }
+                        }
+
+                        override fun onPostExecute(result: Unit?) {
+                            finish()
+                        }
+                    }).execute()
+
+                })
+                .setNegativeButton("Cancel", { _, _ ->
+
+                }).create().show()
     }
 
     fun displaySyncError() = displayToast("Sync Error")

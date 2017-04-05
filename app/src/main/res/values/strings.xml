@@ -11,5 +11,7 @@
     <string name="action_upload_file">Upload Data</string>
     <string name="action_upload_camera">Upload By Camera</string>
     <string name="action_upload_gallery">Upload By Gallery</string>
+    <string name="action_rename">Rename</string>
+    <string name="action_delete">Delete</string>
     <string name="button_back">Back</string>
 </resources>
